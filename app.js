@@ -10,7 +10,7 @@ const app = express();
 app.use(cors())
 
 let total_distractions = 0;
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8000;  
 
 /*const port = new SerialPort({
   path: '/dev/ttyACM0', 
