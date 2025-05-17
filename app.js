@@ -2,38 +2,45 @@ const express = require('express');
 const axios = require("axios");
 const cheerio = require("cheerio");
 const cors = require("cors");
-const { SerialPort } = require('serialport');
-const { ReadlineParser } = require('@serialport/parser-readline');
 require('dotenv').config();
-console.log("Mongo URI from .env:", process.env.MONGODB_URI);
 const { MongoClient } = require('mongodb');
 
-const uri = process.env.MONGODB_URI;
-const client = new MongoClient(uri);
-
+// Initialize Express
 const app = express();
 app.use(cors());
+app.use(express.json());
 
-let total_distractions = 0;
-const PORT = process.env.PORT || 8000;
+// MongoDB Connection Setup
+const uri = process.env.MONGODB_URI;
+const client = new MongoClient(uri);
+let db; // Will hold our database connection
 
-// Connect to MongoDB and start the server
-async function startServer() {
+// Connect to MongoDB (using default database)
+async function connectDB() {
   try {
     await client.connect();
+    db = client.db("doomspray");
     console.log("✅ Connected to MongoDB");
 
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-    });
+    // 🧠 Ensure index exists for uniqueness (run once)
+    await db.collection('blockedSites').createIndex(
+      { userId: 1, url: 1 },
+      { unique: true }
+    );
+    console.log("✅ Ensured index on (userId, url)");
 
+    const collections = await db.listCollections().toArray();
+    console.log("Available collections:", collections.map(c => c.name));
   } catch (err) {
     console.error("❌ MongoDB connection failed:", err);
+    process.exit(1);
   }
 }
 
-startServer();
+connectDB();
 
+// Your EXACT scrape endpoint (unchanged)
+let total_distractions = 0;
 app.get("/scrape", async (req, res) => {
   const url = req.query.url;
   try {
@@ -50,7 +57,7 @@ app.get("/scrape", async (req, res) => {
     });
 
     $('video').each((index, element) => {
-      total_distractions = total_distractions + 2; //make videos worth 2 times
+      total_distractions = total_distractions + 2;
     });
 
     res.json(data);
@@ -65,22 +72,65 @@ app.get("/scrape", async (req, res) => {
   }
 });
 
+// Auth0 Configuration
+const { expressjwt: jwt } = require("express-jwt");
+const jwksRsa = require("jwks-rsa");
+const checkJwt = jwt({
+  secret: jwksRsa.expressJwtSecret({
+    jwksUri: `https://dev-fy4uq4tv3la0alsd.us.auth0.com/.well-known/jwks.json`
+  }),
+  audience: "https://api.doomspray.com", // Must match your new API identifier
+  issuer: `https://dev-fy4uq4tv3la0alsd.us.auth0.com/`,
+  algorithms: ["RS256"]
+});
 
-app.get("/test-mongo", async (req, res) => {
+
+/// ✅ Protect GET route with Auth0
+app.get('/blocked-sites', checkJwt, async (req, res) => {
   try {
-    const db = client.db("doomspray"); // name your DB whatever you want
-    const collection = db.collection("testData");
-
-    // Insert test data
-    await collection.insertOne({ test: "hello from Doomspray!", timestamp: new Date() });
-
-    // Fetch the latest entry
-    const docs = await collection.find().sort({ timestamp: -1 }).limit(1).toArray();
-    
-    res.json({ message: "MongoDB is working!", latestEntry: docs[0] });
-
+    const sites = await db.collection('blockedSites')
+      .find({ userId: req.user.sub })
+      .toArray();
+    res.json(sites.map(site => site.url));
   } catch (err) {
-    console.error("Mongo test error:", err);
-    res.status(500).json({ error: "MongoDB test failed" });
+    console.error('Failed to fetch sites:', err);
+    res.status(500).json({ error: 'Failed to fetch sites' });
+  }
+});
+
+// ✅ POST: Add new blocked site
+app.post('/blocked-sites', checkJwt, async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "Missing 'url' in request body" });
+
+  try {
+    await db.collection('blockedSites').updateOne(
+      { userId: req.user.sub, url },
+      { $setOnInsert: { createdAt: new Date() } },
+      { upsert: true }
+    );
+    res.status(201).json({ message: 'Site added' });
+  } catch (err) {
+    console.error('Error inserting blocked site:', err);
+    res.status(500).json({ error: 'Failed to store site' });
+  }
+});
+
+// ✅ DELETE: Remove a blocked site
+app.delete('/blocked-sites', checkJwt, async (req, res) => {
+  const { url } = req.body;
+  const userId = req.user.sub;
+
+  if (!url) return res.status(400).json({ error: 'Missing URL' });
+
+  try {
+    const result = await db.collection('blockedSites').deleteOne({ userId, url });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'Site not found' });
+    }
+    res.status(200).json({ message: 'Site removed' });
+  } catch (err) {
+    console.error('Error deleting site:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
