@@ -1,45 +1,49 @@
+require('dotenv').config();
 const express = require('express');
 const axios = require("axios");
 const cheerio = require("cheerio");
 const cors = require("cors");
-require('dotenv').config();
-const { MongoClient } = require('mongodb');
+const cookieParser = require('cookie-parser');
+const { auth } = require('express-oauth2-jwt-bearer');
+
+
+// Import DB connection
+const { connectDB } = require('./db');
 
 // Initialize Express
 const app = express();
-app.use(cors());
+
+app.use(cors({
+  origin: 'http://localhost:3000', // your frontend origin
+  credentials: true,               // allow cookies and headers
+  audience: "https://api.doomspray.com"
+}))
 app.use(express.json());
+app.use(cookieParser());
+app.use(express.static('public'));
 
-// MongoDB Connection Setup
-const uri = process.env.MONGODB_URI;
-const client = new MongoClient(uri);
-let db; // Will hold our database connection
-
-// Connect to MongoDB (using default database)
-async function connectDB() {
-  try {
-    await client.connect();
-    db = client.db("doomspray");
-    console.log("✅ Connected to MongoDB");
-
-    // 🧠 Ensure index exists for uniqueness (run once)
-    await db.collection('blockedSites').createIndex(
-      { userId: 1, url: 1 },
-      { unique: true }
-    );
-    console.log("✅ Ensured index on (userId, url)");
-
-    const collections = await db.listCollections().toArray();
-    console.log("Available collections:", collections.map(c => c.name));
-  } catch (err) {
-    console.error("❌ MongoDB connection failed:", err);
-    process.exit(1);
-  }
-}
-
+// Connect to MongoDB before starting server
 connectDB();
 
-// Your EXACT scrape endpoint (unchanged)
+const jwtCheck = auth({
+  audience: 'https://api.doomspray.com',
+  issuerBaseURL: 'https://dev-fy4uq4tv3la0alsd.us.auth0.com/',
+  tokenSigningAlg: 'RS256'
+});
+
+// enforce on all endpoints
+app.use(jwtCheck);
+
+// Import and use the blockedSites router
+const blockedSitesRouter = require('./routes/blockedSites');
+app.use("/blocked-sites", blockedSitesRouter);
+
+// Test Auth0 connection
+app.get('/auth-test', (req, res) => {
+  res.json({ message: 'Authenticated!', user: req.user });
+});
+
+// Scrape endpoint (unchanged, you can keep it here or modularize)
 let total_distractions = 0;
 app.get("/scrape", async (req, res) => {
   const url = req.query.url;
@@ -56,81 +60,33 @@ app.get("/scrape", async (req, res) => {
       });
     });
 
-    $('video').each((index, element) => {
-      total_distractions = total_distractions + 2;
+    $('video').each(() => {
+      total_distractions += 2;
     });
 
+    // Respond with data first
     res.json(data);
 
-    if (total_distractions > 5) {
-      res.send('Distracting');
-    } else {
-      res.send('Good');
-    }
+    // (Optional) you might want to rethink sending multiple responses in one request
   } catch (error) {
     res.status(500).json({ message: "Error accessing the URL" });
   }
 });
 
-// Auth0 Configuration
-const { expressjwt: jwt } = require("express-jwt");
-const jwksRsa = require("jwks-rsa");
-const checkJwt = jwt({
-  secret: jwksRsa.expressJwtSecret({
-    jwksUri: `https://dev-fy4uq4tv3la0alsd.us.auth0.com/.well-known/jwks.json`
-  }),
-  audience: "https://api.doomspray.com", // Must match your new API identifier
-  issuer: `https://dev-fy4uq4tv3la0alsd.us.auth0.com/`,
-  algorithms: ["RS256"]
+// Auth error handler
+app.use((err, req, res, next) => {
+  console.error('Auth Error:', err);
+  if (err.name === 'UnauthorizedError') {
+    return res.status(401).json({
+      error: 'Invalid token',
+      message: err.message,
+      receivedToken: !!req.headers.authorization
+    });
+  }
+  next(err);
 });
 
-
-/// ✅ Protect GET route with Auth0
-app.get('/blocked-sites', checkJwt, async (req, res) => {
-  try {
-    const sites = await db.collection('blockedSites')
-      .find({ userId: req.user.sub })
-      .toArray();
-    res.json(sites.map(site => site.url));
-  } catch (err) {
-    console.error('Failed to fetch sites:', err);
-    res.status(500).json({ error: 'Failed to fetch sites' });
-  }
-});
-
-// ✅ POST: Add new blocked site
-app.post('/blocked-sites', checkJwt, async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: "Missing 'url' in request body" });
-
-  try {
-    await db.collection('blockedSites').updateOne(
-      { userId: req.user.sub, url },
-      { $setOnInsert: { createdAt: new Date() } },
-      { upsert: true }
-    );
-    res.status(201).json({ message: 'Site added' });
-  } catch (err) {
-    console.error('Error inserting blocked site:', err);
-    res.status(500).json({ error: 'Failed to store site' });
-  }
-});
-
-// ✅ DELETE: Remove a blocked site
-app.delete('/blocked-sites', checkJwt, async (req, res) => {
-  const { url } = req.body;
-  const userId = req.user.sub;
-
-  if (!url) return res.status(400).json({ error: 'Missing URL' });
-
-  try {
-    const result = await db.collection('blockedSites').deleteOne({ userId, url });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ error: 'Site not found' });
-    }
-    res.status(200).json({ message: 'Site removed' });
-  } catch (err) {
-    console.error('Error deleting site:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
