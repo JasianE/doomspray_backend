@@ -5,6 +5,7 @@ const cheerio = require("cheerio");
 const cors = require("cors");
 const cookieParser = require('cookie-parser');
 const { auth } = require('express-oauth2-jwt-bearer');
+const notificationsRouter = require('./routes/notifications');
 
 
 // Import DB connection
@@ -21,6 +22,7 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.static('public'));
+app.use('/notifications', notificationsRouter);
 
 // Connect to MongoDB before starting server
 connectDB();
@@ -90,3 +92,5 @@ const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+
