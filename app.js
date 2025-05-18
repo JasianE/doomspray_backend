@@ -13,9 +13,7 @@ const { connectDB } = require('./db');
 
 // Initialize Express
 const app = express();
-app.use(cors())
 
-let total_distractions = 0;
 const PORT = process.env.PORT || 5000;
 
 /*const port = new SerialPort({
@@ -73,6 +71,7 @@ app.listen(PORT, () => {
 })
 
 app.post("/scrape", async (req, res) => {
+  let total_distractions = 0;
   console.log('hello!')
   const data = req.body;
   const extra_urls = req.body.extra_urls; // The urls that the user has blocked themselves
